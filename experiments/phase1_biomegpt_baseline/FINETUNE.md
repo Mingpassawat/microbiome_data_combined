@@ -2,10 +2,10 @@
 
 Two scripts implement fine-tuning on top of the frozen BiomeGPT encoder:
 
-| Script            | Task                                        | Output                          |
-| ----------------- | ------------------------------------------- | ------------------------------- |
-| `finetune.py`     | Binary: healthy (1) vs. all-diseased (0)    | `results/finetune_results.json` |
-| `finetune_ovr.py` | OvR: one binary classifier per disease      | `results/finetune_ovr_results.json` |
+| Script            | Task                                     | Output                              |
+| ----------------- | ---------------------------------------- | ----------------------------------- |
+| `finetune.py`     | Binary: healthy (1) vs. all-diseased (0) | `results/finetune_results.json`     |
+| `finetune_ovr.py` | OvR: one binary classifier per disease   | `results/finetune_ovr_results.json` |
 
 Both share the same pretrained encoder and the same `[CLS]` embedding cache (`results/cls_emb_epoch{N}.pt`). Run `finetune.py` first — it writes the cache; `finetune_ovr.py` reuses it.
 
@@ -163,13 +163,13 @@ final_clf = _train_clf(tr_emb, tr_lab, ...)   # all disease + healthy train samp
 
 External val source depends on the disease:
 
-| Disease            | External val source                                    |
-| ------------------ | ------------------------------------------------------ |
-| Colorectal cancer  | val split (202 disease samples)                        |
-| IBD                | val split (204 disease samples)                        |
-| Obesity            | holdout: `gmhi:V-12_Obesity` (104 samples) + val-split Healthy |
-| Type 2 diabetes    | holdout: `cmd:MetaCardis_2020_a` (549 samples) + val-split Healthy |
-| Liver Cirrhosis    | none — only 1 train study, cannot hold out             |
+| Disease           | External val source                                                |
+| ----------------- | ------------------------------------------------------------------ |
+| Colorectal cancer | val split (202 disease samples)                                    |
+| IBD               | val split (204 disease samples)                                    |
+| Obesity           | holdout: `gmhi:V-12_Obesity` (104 samples) + val-split Healthy     |
+| Type 2 diabetes   | holdout: `cmd:MetaCardis_2020_a` (549 samples) + val-split Healthy |
+| Liver Cirrhosis   | none — only 1 train study, cannot hold out                         |
 
 For holdout-based diseases: holdout samples were excluded from training. External val = disease samples from the holdout study + all Healthy samples from the existing val split.
 

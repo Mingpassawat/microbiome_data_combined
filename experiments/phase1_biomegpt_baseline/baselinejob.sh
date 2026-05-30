@@ -1,0 +1,32 @@
+#!/bin/bash -l
+#SBATCH -p compute                 #specify partition (CPU-only baselines)
+#SBATCH -N 1                       #specify number of nodes
+#SBATCH --ntasks-per-node=1        #specify number of tasks per node
+#SBATCH --cpus-per-task=4         #specify number of cpus (sklearn/XGBoost threads)
+#SBATCH -t 4:00:00                 #job time limit <hr:min:sec>
+#SBATCH -J baselines               #job name
+#SBATCH -o logs/baselines_%j.out   #stdout log (%j = job id)
+#SBATCH -e logs/baselines_%j.err   #stderr log
+
+echo "Welcome to LANTA"
+echo "Job: $SLURM_JOB_NAME   ID: $SLURM_JOB_ID   Node: $(hostname)"
+echo "Started: $(date)"
+
+# --- Environment ------------------------------------------------------------
+module purge
+module load Mamba                                  # LANTA conda/mamba module
+conda activate microbiome-gnn-disease              # env from environment.yml
+
+# Keep BLAS/OpenMP thread counts in sync with the allocation
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
+# --- Run --------------------------------------------------------------------
+cd "$SLURM_SUBMIT_DIR"
+mkdir -p logs results
+
+# RF / logistic regression / XGBoost baselines at the same split level.
+# task.mode in config.yaml selects binary vs. OvR.
+python baselines.py
+
+echo "Finished: $(date)"

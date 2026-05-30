@@ -27,7 +27,7 @@ pretrain:
   batch_size: 64
   warmup_steps: 1000
   max_grad_norm: 1.0
-  seed: 42
+  seed: 67
   checkpoint_path: results/pretrain_checkpoint.pt
 
 finetune:
@@ -37,7 +37,7 @@ finetune:
   batch_size: 64
   n_cv_folds: 10       # study-level GroupKFold
   max_grad_norm: 1.0
-  seed: 42
+  seed: 67
   results_path: results/finetune_results.json
 
 finetune_ovr:
@@ -48,7 +48,7 @@ finetune_ovr:
   batch_size: 64
   n_cv_folds: 10
   max_grad_norm: 1.0
-  seed: 42
+  seed: 67
   results_path: results/finetune_ovr_results.json
 
 baselines:

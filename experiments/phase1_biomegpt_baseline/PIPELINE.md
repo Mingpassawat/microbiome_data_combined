@@ -344,11 +344,11 @@ finetune_ovr:
 
 ### `task.mode` controls scope across both transformer and baseline scripts
 
-| `mode`        | `finetune.py`       | `finetune_ovr.py`                  | `baselines.py`                       |
-| ------------- | ------------------- | ---------------------------------- | ------------------------------------ |
-| `binary`      | healthy vs. all-diseased (normal) | exits with message (use finetune.py) | healthy vs. all-diseased             |
-| `all_ovr`     | unaffected          | OvR for every disease ≥ min_samples | OvR for every disease ≥ min_samples  |
-| `focused_ovr` | unaffected          | OvR for `focus_diseases` only      | OvR for `focus_diseases` only        |
+| `mode`        | `finetune.py`                     | `finetune_ovr.py`                    | `baselines.py`                      |
+| ------------- | --------------------------------- | ------------------------------------ | ----------------------------------- |
+| `binary`      | healthy vs. all-diseased (normal) | exits with message (use finetune.py) | healthy vs. all-diseased            |
+| `all_ovr`     | unaffected                        | OvR for every disease ≥ min_samples  | OvR for every disease ≥ min_samples |
+| `focused_ovr` | unaffected                        | OvR for `focus_diseases` only        | OvR for `focus_diseases` only       |
 
 ---
 
