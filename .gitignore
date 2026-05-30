@@ -1,0 +1,39 @@
+# Data (large files, not for version control)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Experiment outputs (large checkpoints / result caches)
+experiments/**/results/*.pt
+experiments/**/results/*.gz
+
+# Keep results JSON (small, useful to track)
+!experiments/**/results/*.json
+
+# Environment
+.env
+*.env
+venv/
+.venv/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code / agent tooling (installed skills, local settings)
+.claude/
+.agents/

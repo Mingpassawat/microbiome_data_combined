@@ -1,0 +1,49 @@
+data:
+  abundance_path: ../../data/combined_microbiome/relative_abundance_species_proportions_wide.csv
+  metadata_path: ../../data/combined_microbiome/metadata.csv
+  n_bins: 100          # nonzero abundances → bins 1..100; absent → 0
+  min_nonzero_species: 1
+
+model:
+  d_model: 512
+  n_layers: 8
+  n_heads: 8
+  ffn_dim: 512         # same as d_model, matching BiomeGPT paper
+  dropout: 0.1
+
+pretrain:
+  mask_rate: 0.25      # fraction of nonzero species to mask per sample
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
+  epochs: 30
+  batch_size: 64
+  warmup_steps: 1000
+  max_grad_norm: 1.0
+  seed: 42
+  checkpoint_path: results/pretrain_checkpoint.pt
+
+finetune:
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
+  epochs: 50
+  batch_size: 64
+  n_cv_folds: 10       # study-level GroupKFold
+  max_grad_norm: 1.0
+  seed: 42
+  results_path: results/finetune_results.json
+
+finetune_ovr:
+  min_disease_samples: 50   # skip diseases with fewer train samples than this
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
+  epochs: 50
+  batch_size: 64
+  n_cv_folds: 10
+  max_grad_norm: 1.0
+  seed: 42
+  results_path: results/finetune_ovr_results.json
+
+baselines:
+  seed: 67
+  n_cv_folds: 10
+  results_path: results/baseline_results.json
