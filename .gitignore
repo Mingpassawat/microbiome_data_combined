@@ -33,7 +33,3 @@ venv/
 # IDE
 .vscode/
 .idea/
-
-# Claude Code / agent tooling (installed skills, local settings)
-.claude/
-.agents/

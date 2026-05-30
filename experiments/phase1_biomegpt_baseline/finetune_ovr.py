@@ -154,7 +154,11 @@ def _eval_clf(
     return _compute_metrics(lab.numpy(), probs)
 
 
-def _build_disease_list(meta: pd.DataFrame, min_samples: int) -> list[str]:
+def _build_disease_list(
+    meta: pd.DataFrame,
+    min_samples: int,
+    focus: list[str] | None = None,
+) -> list[str]:
     train_meta = meta[meta["split"] == "train"]
     counts = train_meta["label"].value_counts()
     diseases = [
@@ -162,6 +166,14 @@ def _build_disease_list(meta: pd.DataFrame, min_samples: int) -> list[str]:
         for label, n in counts.items()
         if label != "Healthy" and ";" not in str(label) and n >= min_samples
     ]
+    if focus:
+        found = [d for d in diseases if d in focus]
+        missing = set(focus) - set(found)
+        if missing:
+            tqdm.write(
+                f"  Warning: focus diseases not in train data or < {min_samples} samples: {sorted(missing)}"
+            )
+        diseases = found
     return diseases
 
 
@@ -170,9 +182,17 @@ def main() -> None:
     with open(os.path.join(base_dir, "config.yaml")) as f:
         cfg = yaml.safe_load(f)
 
+    task_cfg = cfg.get("task", {})
+    mode = task_cfg.get("mode", "all_ovr")
+    focus_diseases: list[str] = task_cfg.get("focus_diseases") or []
+
+    if mode == "binary":
+        tqdm.write("mode='binary' — use finetune.py for binary healthy/diseased classification.")
+        return
+
     set_seed(cfg["finetune_ovr"]["seed"])
     device = _get_device()
-    tqdm.write(f"Device: {device}")
+    tqdm.write(f"Device: {device}  |  mode: {mode}")
 
     # ── Load pretrained encoder ───────────────────────────────────────────────
     ckpt_path = os.path.join(base_dir, cfg["pretrain"]["checkpoint_path"])
@@ -215,7 +235,11 @@ def main() -> None:
     meta = meta.copy()
     meta["label"] = label_series
 
-    diseases = _build_disease_list(meta, cfg["finetune_ovr"]["min_disease_samples"])
+    diseases = _build_disease_list(
+        meta,
+        cfg["finetune_ovr"]["min_disease_samples"],
+        focus=focus_diseases if mode == "focused_ovr" else None,
+    )
     tqdm.write(f"\nDisease list ({len(diseases)} diseases):")
     for d in diseases:
         n_train = ((meta["split"] == "train") & (meta["label"] == d)).sum()

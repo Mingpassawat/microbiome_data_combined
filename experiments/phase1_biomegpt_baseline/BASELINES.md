@@ -2,6 +2,16 @@
 
 `baselines.py` answers one question: **how well do classical ML models do on the same data and same split as BiomeGPT?** If the transformer only barely beats RF, the transformer is not earning its complexity. If it wins clearly, especially on external val, the pretraining is doing real work.
 
+The script has two operating modes controlled by `task.mode` in `config.yaml`:
+
+| `task.mode`   | What runs                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------- |
+| `binary`      | One classifier per feature set — healthy (1) vs. all-diseased (0)                           |
+| `focused_ovr` | One classifier per disease listed in `task.focus_diseases` — disease (1) vs. healthy (0)    |
+| `all_ovr`     | Same as `focused_ovr` but discovers all diseases with ≥ `min_disease_samples` train samples |
+
+Steps 1–6 below describe the **binary mode**. Steps 1–3 are shared with OvR mode. The OvR-specific loop is described in [OvR Mode](#ovr-mode-focused_ovr--all_ovr).
+
 ---
 
 ## Step 1 — Load data and compute bin edges
@@ -87,7 +97,7 @@ Maps each abundance to the same integer bins the transformer uses. This lets you
 
 ## Step 4 — Define classifiers
 
-Three classifiers are built once and reused across all four feature sets.
+Classifiers are created by `_make_classifiers(seed, n_pos, n_neg)`, which takes the positive and negative class counts so XGBoost's `scale_pos_weight` can be set correctly per task. In binary mode they are built once; in OvR mode they are rebuilt per disease since each has a different imbalance ratio.
 
 ### Logistic Regression
 
@@ -98,7 +108,7 @@ Pipeline([
         penalty='l1',           # L1 regularization → sparse solution (many coefficients go to zero)
         solver='saga',          # only solver that supports L1 + large datasets
         C=1.0,                  # inverse regularization strength (smaller = more regularization)
-        class_weight='balanced',# upweight diseased class automatically
+        class_weight='balanced',# upweight minority class automatically
         max_iter=2000,
     )
 ])
@@ -108,7 +118,7 @@ Pipeline([
 
 L1 regularization produces a sparse model — most of the 2,817 species coefficients will be pushed to exactly zero. The model effectively performs feature selection automatically.
 
-`class_weight='balanced'` sets each class's weight to `n_samples / (n_classes × n_class_samples)`, roughly doubling the loss contribution from diseased samples to compensate for the ~1.8:1 healthy/diseased imbalance.
+`class_weight='balanced'` sets each class's weight to `n_samples / (n_classes × n_class_samples)`. In OvR mode the minority class (disease) is typically much smaller than healthy, so this is important.
 
 ### Random Forest
 
@@ -133,13 +143,13 @@ XGBClassifier(
     n_estimators=300,        # 300 boosting rounds (sequential trees)
     max_depth=6,             # maximum depth of each tree
     learning_rate=0.1,       # shrinkage — each tree's contribution is scaled down
-    scale_pos_weight=neg/pos,# equivalent to class_weight for XGBoost: neg/pos ≈ 0.56
+    scale_pos_weight=n_neg/n_pos,  # compensates for class imbalance; recalculated per disease in OvR
     subsample=0.8,           # each tree trained on 80% of rows (row subsampling)
     colsample_bytree=0.5,    # each tree uses 50% of features (column subsampling)
 )
 ```
 
-Unlike RF (parallel independent trees), XGBoost builds trees sequentially: each tree corrects the residual errors of all previous trees. `learning_rate=0.1` prevents any single tree from dominating. `scale_pos_weight` tells XGBoost to treat each diseased sample as if it were `neg/pos ≈ 0.56` samples (compensating for imbalance).
+Unlike RF (parallel independent trees), XGBoost builds trees sequentially: each tree corrects the residual errors of all previous trees. `learning_rate=0.1` prevents any single tree from dominating.
 
 `subsample` and `colsample_bytree` add regularization by introducing randomness into each tree.
 
@@ -147,7 +157,7 @@ Unlike RF (parallel independent trees), XGBoost builds trees sequentially: each 
 
 ## Step 5 — Run 10-fold study-level GroupKFold CV
 
-This is the inner loop that runs for every `(feature_set, classifier)` combination — 4 × 3 = 12 total (or 4 × 2 = 8 without XGBoost).
+This is the inner loop that runs for every `(feature_set, classifier)` combination. By default only `log1p` is active (`active_features = ["log1p"]`), giving 2–3 runs (LR + RF + optional XGBoost). Change `active_features` in the script to run all four feature representations.
 
 ```python
 gkf = GroupKFold(n_splits=10)
@@ -208,24 +218,92 @@ With ~64% healthy and ~36% diseased, accuracy alone would be 64% for a model tha
 
 ## Step 8 — Save results
 
+### Binary mode result format
+
 ```
 results/baseline_results.json
 {
-  "proportions": {
+  "log1p": {
     "logistic_regression": {
-      "cv":       { "mean": {...}, "std": {...}, "folds": [...] },
+      "cv":       { "mean": {"accuracy": ..., "macro_f1": ..., "macro_auroc": ...},
+                    "std":  {...},
+                    "folds": [...] },
       "external": { "accuracy": ..., "macro_f1": ..., "macro_auroc": ... }
     },
     "random_forest": { ... },
-    "xgboost":        { ... }
-  },
-  "log1p":   { ... },
-  "clr":     { ... },
-  "binned":  { ... }
+    "xgboost":       { ... }
+  }
 }
 ```
 
-The full fold-by-fold breakdown is included under `"folds"` so you can compute confidence intervals or inspect fold variance if needed.
+### OvR mode result format
+
+```
+results/baseline_results.json
+{
+  "CRC": {
+    "log1p": {
+      "logistic_regression": {
+        "cv":          { "mean": {"binary_f1": ..., "auroc": ...}, "std": {...}, "folds": [...] },
+        "external":    { "binary_f1": ..., "auroc": ... },   # null if disease absent in val
+        "n_train_pos": 312,
+        "n_train_neg": 21444
+      },
+      "random_forest": { ... }
+    }
+  },
+  "IBD": { ... },
+  ...
+}
+```
+
+The full fold-by-fold breakdown is under `"folds"` in both formats.
+
+---
+
+## OvR Mode (`focused_ovr` / `all_ovr`)
+
+When `task.mode` is not `binary`, the script runs one classifier per disease instead of the single healthy-vs-all-diseased classifier.
+
+### Disease discovery
+
+```python
+_build_disease_list(meta, min_samples=50, focus=focus_diseases)
+```
+
+Reads the raw `label` column (loaded via `_attach_label_column`). Excludes `"Healthy"` and composite labels containing `";"`. Keeps diseases with ≥ `min_disease_samples` train samples. In `focused_ovr` mode, further filters to only the diseases listed in `task.focus_diseases`; prints a warning for any listed disease not found or below threshold.
+
+### Per-disease subset
+
+For each disease:
+
+```python
+# Train: disease samples + healthy samples
+train_mask = (train_meta["label"] == disease) | (train_meta["label"] == "Healthy")
+y_tr_d = 1 if label == disease else 0   # binary OvR label
+```
+
+Row selection uses a precomputed `{sample_key → positional index}` map to index into the pre-built feature matrices without recomputing transforms.
+
+### CV and external val
+
+Uses `run_ovr_cv` (GroupKFold with `n_splits = min(n_folds, n_unique_studies)`). Reports `binary_f1` and `auroc` per fold. External val is only computed if the disease has both positive and negative samples in the val split — most diseases other than IBD and CRC will show `null` for external.
+
+### Comparison table
+
+After running both `finetune_ovr.py` and `baselines.py` in OvR mode, compare:
+
+```
+disease     | baseline CV auroc | transformer CV auroc | baseline ext | transformer ext
+────────────────────────────────────────────────────────────────────────────────────────
+CRC         |       ?           |         ?            |      ?       |        ?
+IBD         |       ?           |         ?            |      ?       |        ?
+T2D         |       ?           |         ?            |    n/a       |      n/a
+Cirrhosis   |       ?           |         ?            |    n/a       |      n/a
+OBT         |       ?           |         ?            |    n/a       |      n/a
+```
+
+A transformer that only matches RF on CV but wins on external is still earning its pretraining.
 
 ---
 

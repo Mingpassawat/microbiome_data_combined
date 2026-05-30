@@ -6,10 +6,13 @@ Faithful reproduction of [Medearis 2025 BiomeGPT]\(../../sources/Microbiome\ Pro
 
 ```bash
 cd experiments/phase1_biomegpt_baseline
-python pretrain.py    # ~12 min on MPS/GPU, longer on CPU
-python finetune.py    # fast — extracts embeddings once, then trains MLP
-python baselines.py   # RF / LR / XGBoost classicals
+python pretrain.py       # ~12 min on MPS/GPU, longer on CPU
+python finetune.py       # fast — extracts embeddings once, then trains MLP
+python finetune_ovr.py   # per-disease OvR classifiers on frozen [CLS] embeddings
+python baselines.py      # RF / LR / XGBoost classicals (binary or OvR, per config)
 ```
+
+The active experiment scope is controlled by `task.mode` in `config.yaml` — see [Configuration](#configuration-configyaml).
 
 Results land in `results/`. Compare against BiomeGPT targets:
 
@@ -31,14 +34,21 @@ raw data (CSVs)
               ──── MicrobiomeDataset    sparse (species_idx, bin_idx) per sample
               ──── collate_fn           pad + prepend [CLS]
       │
-      ├──► pretrain.py  ──► results/pretrain_checkpoint.pt
+      ├──► pretrain.py    ──► results/pretrain_checkpoint.pt
       │         masked abundance prediction (MSE, 30 epochs)
       │
-      ├──► finetune.py  ──► results/finetune_results.json
+      ├──► finetune.py    ──► results/finetune_results.json
       │         frozen encoder → [CLS] embeddings → MLP → 10-fold CV + ext val
+      │         (binary: healthy vs. all-diseased)
       │
-      └──► baselines.py ──► results/baseline_results.json
-                RF / LR / XGBoost on proportions / log1p / CLR / binned
+      ├──► finetune_ovr.py ──► results/finetune_ovr_results.json
+      │         same frozen encoder → per-disease OvR MLP → 10-fold CV + ext val
+      │         (one binary classifier per disease vs. healthy)
+      │
+      └──► baselines.py   ──► results/baseline_results.json
+                RF / LR / XGBoost; mode controlled by task.mode in config.yaml
+                binary: healthy vs. all-diseased
+                focused_ovr / all_ovr: per-disease OvR, same structure as finetune_ovr
 ```
 
 ---
@@ -265,7 +275,7 @@ After CV, train one final classifier on **all 30,711 train embeddings** and eval
 
 ## Classical Baselines (`baselines.py`)
 
-Provides the "how much does the transformer actually help?" comparison.
+Provides the "how much does the transformer actually help?" comparison. Behavior is controlled by `task.mode` in `config.yaml`; see [Configuration](#configuration-configyaml).
 
 ### Feature representations
 
@@ -276,7 +286,7 @@ Provides the "how much does the transformer actually help?" comparison.
 | `clr`         | `log(x + ε) − mean(log(x + ε))`      | standard compositional data transform     |
 | `binned`      | same 100-bin quantile as model input | apples-to-apples with BiomeGPT input      |
 
-CLR uses pseudocount `ε = 1e-6` to handle zeros without losing sparsity structure. The geometric mean in CLR is computed per-sample across all 2,817 species.
+The active set is controlled by `active_features` inside `baselines.py` (default: `["log1p"]`). Change it to `list(feature_sets)` to run all four.
 
 ### Classifiers
 
@@ -286,7 +296,9 @@ CLR uses pseudocount `ε = 1e-6` to handle zeros without losing sparsity structu
 | **Random Forest**       | 300 trees, `max_features="sqrt"`, `class_weight="balanced"`                  |
 | **XGBoost**             | 300 trees, `scale_pos_weight=neg/pos` for imbalance, `colsample_bytree=0.5`  |
 
-Same 10-fold study GroupKFold CV + external val as the transformer.
+Same 10-fold study GroupKFold CV + external val as the transformer. In OvR mode, classifiers are re-instantiated per disease with the correct `scale_pos_weight` for that disease's imbalance ratio.
+
+See `BASELINES.md` for a full step-by-step walkthrough of each mode.
 
 ---
 
@@ -295,6 +307,15 @@ Same 10-fold study GroupKFold CV + external val as the transformer.
 All hyperparameters are in one place — no hardcoded values anywhere in the Python files.
 
 ```yaml
+task:
+  mode: focused_ovr    # "binary" | "all_ovr" | "focused_ovr"
+  focus_diseases:      # used when mode = focused_ovr
+    - CRC
+    - IBD
+    - OBT
+    - T2D
+    - Cirrhosis
+
 data:
   n_bins: 100          # number of abundance bins (1..100, 0=absent, 101=MASK)
 
@@ -314,7 +335,20 @@ pretrain:
 finetune:
   epochs: 50           # classifier training epochs per fold
   n_cv_folds: 10       # study-level GroupKFold
+
+finetune_ovr:
+  min_disease_samples: 50  # diseases with fewer train samples are skipped
+  epochs: 50
+  n_cv_folds: 10
 ```
+
+### `task.mode` controls scope across both transformer and baseline scripts
+
+| `mode`        | `finetune.py`       | `finetune_ovr.py`                  | `baselines.py`                       |
+| ------------- | ------------------- | ---------------------------------- | ------------------------------------ |
+| `binary`      | healthy vs. all-diseased (normal) | exits with message (use finetune.py) | healthy vs. all-diseased             |
+| `all_ovr`     | unaffected          | OvR for every disease ≥ min_samples | OvR for every disease ≥ min_samples  |
+| `focused_ovr` | unaffected          | OvR for `focus_diseases` only      | OvR for `focus_diseases` only        |
 
 ---
 
@@ -324,10 +358,11 @@ finetune:
 results/
   pretrain_checkpoint.pt      encoder weights + species_list + bin_edges
   pretrain_history.json       epoch-by-epoch loss curve
-  cls_emb_epoch{N}.pt         cached [CLS] embeddings (reused by finetune)
-  classifier.pt               final MLP trained on all train data
-  finetune_results.json       CV folds + mean/std + external val metrics
-  baseline_results.json       all feature × classifier combinations
+  cls_emb_epoch{N}.pt         cached [CLS] embeddings (shared by finetune + finetune_ovr)
+  classifier.pt               final binary MLP trained on all train data
+  finetune_results.json       binary CV folds + mean/std + external val metrics
+  finetune_ovr_results.json   per-disease OvR CV + external val metrics
+  baseline_results.json       classical ML results (binary or OvR, per task.mode)
 ```
 
 ---

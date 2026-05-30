@@ -1,3 +1,15 @@
+task:
+  # "binary"     → healthy vs. all-diseased (use finetune.py / baselines.py binary path)
+  # "all_ovr"    → one classifier per disease, discover diseases from data
+  # "focused_ovr"→ one classifier per disease, only the diseases listed below
+  mode: focused_ovr
+  focus_diseases:
+    - CRC
+    - IBD
+    - OBT
+    - T2D
+    - Cirrhosis
+
 data:
   abundance_path: ../../data/combined_microbiome/relative_abundance_species_proportions_wide.csv
   metadata_path: ../../data/combined_microbiome/metadata.csv
