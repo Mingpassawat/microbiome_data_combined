@@ -13,8 +13,7 @@ echo "Job: $SLURM_JOB_NAME   ID: $SLURM_JOB_ID   Node: $(hostname)"
 echo "Started: $(date)"
 
 # --- Environment ------------------------------------------------------------
-module purge
-module load Mamba                                  # LANTA conda/mamba module
+ml Mamba/23.11.0-0                             # LANTA conda/mamba module
 conda activate microbiome-gnn-disease              # env from environment.yml
 
 # Keep BLAS/OpenMP thread counts in sync with the allocation
@@ -27,6 +26,6 @@ mkdir -p logs results
 
 # RF / logistic regression / XGBoost baselines at the same split level.
 # task.mode in config.yaml selects binary vs. OvR.
-python baselines.py
+python experiments/phase1_biomegpt_baseline/baselines.py
 
 echo "Finished: $(date)"
