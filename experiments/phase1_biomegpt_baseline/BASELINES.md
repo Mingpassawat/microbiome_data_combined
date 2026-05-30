@@ -287,20 +287,32 @@ Row selection uses a precomputed `{sample_key → positional index}` map to inde
 
 ### CV and external val
 
-Uses `run_ovr_cv` (GroupKFold with `n_splits = min(n_folds, n_unique_studies)`). Reports `binary_f1` and `auroc` per fold. External val is only computed if the disease has both positive and negative samples in the val split — most diseases other than IBD and CRC will show `null` for external.
+Uses `run_ovr_cv` (GroupKFold with `n_splits = min(n_folds, n_unique_studies)`). Reports `binary_f1` and `auroc` per fold.
+
+### External val source per disease
+
+| Disease           | External val source                                                |
+| ----------------- | ------------------------------------------------------------------ |
+| Colorectal cancer | val split (202 disease samples)                                    |
+| IBD               | val split (204 disease samples)                                    |
+| Obesity           | holdout: `gmhi:V-12_Obesity` (104 samples) + val-split Healthy     |
+| Type 2 diabetes   | holdout: `cmd:MetaCardis_2020_a` (549 samples) + val-split Healthy |
+| Liver Cirrhosis   | none — only 1 train study, cannot hold out                         |
+
+For holdout diseases: the holdout study is excluded from training; its disease samples + all val-split Healthy samples form the external test set. `external_source` is stored in the JSON output per result entry.
 
 ### Comparison table
 
 After running both `finetune_ovr.py` and `baselines.py` in OvR mode, compare:
 
 ```
-disease     | baseline CV auroc | transformer CV auroc | baseline ext | transformer ext
-────────────────────────────────────────────────────────────────────────────────────────
-CRC         |       ?           |         ?            |      ?       |        ?
-IBD         |       ?           |         ?            |      ?       |        ?
-T2D         |       ?           |         ?            |    n/a       |      n/a
-Cirrhosis   |       ?           |         ?            |    n/a       |      n/a
-OBT         |       ?           |         ?            |    n/a       |      n/a
+disease             | baseline CV auroc | transformer CV auroc | baseline ext           | transformer ext
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+Colorectal cancer   |        ?          |          ?           | ? (val split)          | ? (val split)
+IBD                 |        ?          |          ?           | ? (val split)          | ? (val split)
+Obesity             |        ?          |          ?           | ? (holdout study)      | ? (holdout study)
+Type 2 diabetes     |        ?          |          ?           | ? (holdout study)      | ? (holdout study)
+Liver Cirrhosis     |        ?          |          ?           | n/a (1 study only)     | n/a (1 study only)
 ```
 
 A transformer that only matches RF on CV but wins on external is still earning its pretraining.

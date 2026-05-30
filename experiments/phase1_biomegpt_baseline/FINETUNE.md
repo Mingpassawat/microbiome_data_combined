@@ -158,12 +158,24 @@ Metrics: `binary_f1` and `auroc` (not macro — binary classification).
 ### Step 7 — Final classifier + external validation
 
 ```python
-final_clf = _train_clf(tr_emb, tr_lab, ...)   # all disease + healthy train samples
-# Val: disease samples present in val split + healthy val samples
-external = _eval_clf(final_clf, va_emb, va_lab, ...)
+final_clf = _train_clf(tr_emb, tr_lab, ...)   # all disease + healthy train samples (excl. holdout)
 ```
 
-External val is only reported if the disease has positive samples in the val split. For the current dataset, only **IBD** and **CRC** appear in the val split as disease classes; all other diseases report `null` for external.
+External val source depends on the disease:
+
+| Disease            | External val source                                    |
+| ------------------ | ------------------------------------------------------ |
+| Colorectal cancer  | val split (202 disease samples)                        |
+| IBD                | val split (204 disease samples)                        |
+| Obesity            | holdout: `gmhi:V-12_Obesity` (104 samples) + val-split Healthy |
+| Type 2 diabetes    | holdout: `cmd:MetaCardis_2020_a` (549 samples) + val-split Healthy |
+| Liver Cirrhosis    | none — only 1 train study, cannot hold out             |
+
+For holdout-based diseases: holdout samples were excluded from training. External val = disease samples from the holdout study + all Healthy samples from the existing val split.
+
+For val-split diseases (IBD, Colorectal cancer): existing val split provides both disease and healthy samples.
+
+`external_source` is recorded in `finetune_ovr_results.json` per disease so the origin of each metric is traceable.
 
 ### Step 8 — Save results
 
@@ -210,13 +222,13 @@ These are the BiomeGPT paper targets. Match them before drawing any conclusions 
 ### OvR (`finetune_ovr.py`) comparison table
 
 ```
-disease     | CV AUROC (OvR MLP) | CV AUROC (baseline) | Ext AUROC (OvR) | Ext AUROC (baseline)
-────────────────────────────────────────────────────────────────────────────────────────────────
-CRC         |         ?          |          ?          |        ?        |          ?
-IBD         |         ?          |          ?          |        ?        |          ?
-T2D         |         ?          |          ?          |       n/a       |         n/a
-Cirrhosis   |         ?          |          ?          |       n/a       |         n/a
-OBT         |         ?          |          ?          |       n/a       |         n/a
+disease             | CV AUROC (MLP) | CV AUROC (baseline) | Ext AUROC (MLP)        | Ext AUROC (baseline)
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+Colorectal cancer   |       ?        |          ?          | ? (val split)          | ? (val split)
+IBD                 |       ?        |          ?          | ? (val split)          | ? (val split)
+Obesity             |       ?        |          ?          | ? (holdout study)      | ? (holdout study)
+Type 2 diabetes     |       ?        |          ?          | ? (holdout study)      | ? (holdout study)
+Liver Cirrhosis     |       ?        |          ?          | n/a (1 study only)     | n/a (1 study only)
 ```
 
 A high CV AUROC that collapses on external val signals study-level overfitting, not generalizable disease signal. A consistent gap between transformer and baseline on external val is the key indicator that pretraining is doing useful work.

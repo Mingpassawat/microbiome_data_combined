@@ -1,0 +1,21 @@
+name: microbiome-gnn-disease
+channels:
+  - defaults
+dependencies:
+  - matplotlib
+  - joblib
+  - pytorch
+  - scikit-learn
+  - networkx
+  - torchvision
+  - xgboost
+  - ipykernel
+  - python=3.11
+  - scipy
+  - pandas
+  - llvm-openmp
+  - jupyter
+  - numpy
+  - tqdm
+  - optuna
+prefix: /opt/miniconda3/envs/microbiome-gnn-disease

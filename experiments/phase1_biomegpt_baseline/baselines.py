@@ -17,6 +17,7 @@ import os
 import random
 import warnings
 
+import json
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
@@ -195,7 +196,7 @@ def _make_classifiers(seed: int, n_pos: int, n_neg: int) -> dict:
             ("scaler", StandardScaler()),
             ("clf", LogisticRegression(
                 C=1.0, solver="saga", penalty="l1", max_iter=2000,
-                class_weight="balanced", random_state=seed, n_jobs=-1,
+                class_weight="balanced", random_state=seed, verbose=True,
             )),
         ]),
         "random_forest": RandomForestClassifier(
@@ -219,9 +220,7 @@ def main() -> None:
     with open(os.path.join(base_dir, "config.yaml")) as f:
         cfg = yaml.safe_load(f)
 
-    task_cfg = cfg.get("task", {})
-    mode = task_cfg.get("mode", "binary")
-    focus_diseases: list[str] = task_cfg.get("focus_diseases") or []
+    mode = cfg.get("task", {}).get("mode", "binary")
 
     set_seed(cfg["baselines"]["seed"])
     seed = cfg["baselines"]["seed"]
@@ -299,54 +298,58 @@ def main() -> None:
         tqdm.write(f"\nBaseline results saved → {results_path}")
         return
 
-    # ── OvR mode: one classifier per disease vs. healthy ─────────────────────
-    meta = _attach_label_column(meta, meta_path)
-    train_meta = meta[meta["split"] == "train"]
-    val_meta = meta[meta["split"] == "val"]
+    # ── OvR mode: load precomputed splits, one classifier per disease ─────────
+    splits_path = os.path.join(base_dir, cfg["data"]["task_splits_path"])
+    if not os.path.exists(splits_path):
+        raise FileNotFoundError(
+            f"task_splits.json not found: {splits_path}\nRun make_task_splits.py first."
+        )
+    with open(splits_path) as f:
+        task_splits: dict[str, dict] = json.load(f)
+    ovr_tasks = {k: v for k, v in task_splits.items() if k != "binary"}
+    tqdm.write(f"\nOvR tasks ({len(ovr_tasks)}): {list(ovr_tasks)}")
 
-    min_samples = cfg["finetune_ovr"]["min_disease_samples"]
-    diseases = _build_disease_list(
-        meta,
-        min_samples,
-        focus=focus_diseases if mode == "focused_ovr" else None,
-    )
-    tqdm.write(f"\nOvR diseases ({len(diseases)}): {diseases}")
-
-    # Positional index maps for fast row selection
+    # key → positional index in X_tr_raw / X_va_raw
+    meta_with_label = _attach_label_column(meta, meta_path)
+    train_meta = meta_with_label[meta_with_label["split"] == "train"]
+    val_meta   = meta_with_label[meta_with_label["split"] == "val"]
     tr_key_to_pos = {k: i for i, k in enumerate(train_meta.index)}
     va_key_to_pos = {k: i for i, k in enumerate(val_meta.index)}
 
-    # Rebuild classifiers with balanced weights (no pos/neg ratio yet — set per disease)
+    def _gather_feat(keys: list[str], X_tr: np.ndarray, X_va: np.ndarray) -> np.ndarray:
+        tr_idx = [tr_key_to_pos[k] for k in keys if k in tr_key_to_pos]
+        va_idx = [va_key_to_pos[k] for k in keys if k in va_key_to_pos]
+        parts = []
+        if tr_idx:
+            parts.append(X_tr[tr_idx])
+        if va_idx:
+            parts.append(X_va[va_idx])
+        if not parts:
+            return np.empty((0, X_tr.shape[1]), dtype=X_tr.dtype)
+        return np.concatenate(parts, axis=0)
+
     all_ovr_results: dict = {}
-    disease_bar = tqdm(diseases, desc="OvR diseases", unit="disease")
-    for disease in disease_bar:
+    disease_bar = tqdm(ovr_tasks.items(), desc="OvR diseases", unit="disease", total=len(ovr_tasks))
+    for disease, task in disease_bar:
         disease_bar.set_postfix(disease=disease[:30])
 
-        # Train subset: disease samples + healthy samples
-        tr_mask = (train_meta["label"] == disease) | (train_meta["label"] == "Healthy")
-        dm = train_meta[tr_mask].copy()
-        dm["_ovr"] = (dm["label"] == disease).astype(int)
-        tr_keys = [k for k in dm.index if k in tr_key_to_pos]
+        tr_keys = [k for k in task["train_keys"] if k in tr_key_to_pos]
         if not tr_keys:
-            tqdm.write(f"  [{disease}] no train samples — skip")
+            tqdm.write(f"  [{disease}] no train keys — skip")
             continue
         tr_pos = np.array([tr_key_to_pos[k] for k in tr_keys])
-        y_tr_d = dm.loc[tr_keys, "_ovr"].values.astype(int)
-        groups_d = dm.loc[tr_keys, "group_id"].values
+        y_tr_d = np.array(
+            [1 if meta_with_label.loc[k, "label"] == disease else 0 for k in tr_keys],
+            dtype=int,
+        )
+        groups_d = np.array([str(meta_with_label.loc[k, "group_id"]) for k in tr_keys])
         n_pos_d = int(y_tr_d.sum())
         n_neg_d = int((y_tr_d == 0).sum())
         if n_pos_d == 0 or n_neg_d == 0:
             tqdm.write(f"  [{disease}] degenerate (pos={n_pos_d} neg={n_neg_d}) — skip")
             continue
 
-        # Val subset
-        va_mask = (val_meta["label"] == disease) | (val_meta["label"] == "Healthy")
-        vm = val_meta[va_mask].copy()
-        vm["_ovr"] = (vm["label"] == disease).astype(int)
-        va_keys = [k for k in vm.index if k in va_key_to_pos]
-        va_pos = np.array([va_key_to_pos[k] for k in va_keys]) if va_keys else np.array([], dtype=int)
-        y_va_d = vm.loc[va_keys, "_ovr"].values.astype(int) if va_keys else np.array([], dtype=int)
-
+        ext_source = task.get("val_source", "none")
         classifiers_d = _make_classifiers(seed, n_pos_d, n_neg_d)
         combos = [(f, c) for f in active_features for c in classifiers_d]
         disease_results: dict = {}
@@ -359,20 +362,30 @@ def main() -> None:
             folds = run_ovr_cv(clf, X_tr_d, y_tr_d, groups_d, n_folds, disease)
             cv_summary = _mean_std(folds)
 
-            # Train final, eval on val
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 clf.fit(X_tr_d, y_tr_d)
+
             external: dict | None = None
-            if len(va_pos) > 0 and y_va_d.sum() > 0 and (y_va_d == 0).sum() > 0:
-                X_va_d = X_va_full[va_pos]
-                y_prob_va = clf.predict_proba(X_va_d)[:, 1]
-                y_pred_va = clf.predict(X_va_d)
-                external = _binary_metrics(y_va_d, y_pred_va, y_prob_va)
+            pos_keys = task["val_pos_keys"]
+            neg_keys = task["val_neg_keys"]
+            if pos_keys and neg_keys:
+                X_pos = _gather_feat(pos_keys, X_tr_full, X_va_full)
+                X_neg = _gather_feat(neg_keys, X_tr_full, X_va_full)
+                if len(X_pos) > 0 and len(X_neg) > 0:
+                    X_ext = np.concatenate([X_pos, X_neg], axis=0)
+                    y_ext = np.concatenate([
+                        np.ones(len(X_pos), dtype=int),
+                        np.zeros(len(X_neg), dtype=int),
+                    ])
+                    y_prob = clf.predict_proba(X_ext)[:, 1]
+                    y_pred = clf.predict(X_ext)
+                    external = _binary_metrics(y_ext, y_pred, y_prob)
 
             disease_results.setdefault(feat_name, {})[clf_name] = {
                 "cv": cv_summary,
                 "external": external,
+                "external_source": ext_source,
                 "n_train_pos": n_pos_d,
                 "n_train_neg": n_neg_d,
             }
@@ -385,7 +398,8 @@ def main() -> None:
         tqdm.write(
             f"  {disease[:35]:<35} | "
             f"CV auroc={cv_mean['auroc']:.4f}  f1={cv_mean['binary_f1']:.4f}"
-            + (f"  | ext auroc={ext['auroc']:.4f}" if ext else "  | no ext val")
+            + (f"  | ext auroc={ext['auroc']:.4f} ({ext_source})" if ext
+               else f"  | no ext val ({ext_source})")
         )
 
     with open(results_path, "w") as f:
