@@ -1,6 +1,6 @@
 name: microbiome-gnn-disease
 channels:
-  - defaults
+  - conda-forge
 dependencies:
   - matplotlib
   - joblib
@@ -18,4 +18,4 @@ dependencies:
   - numpy
   - tqdm
   - optuna
-prefix: /opt/miniconda3/envs/microbiome-gnn-disease
+
