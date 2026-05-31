@@ -287,17 +287,17 @@ Row selection uses a precomputed `{sample_key → positional index}` map to inde
 
 ### CV and external val
 
-Uses `run_ovr_cv` (GroupKFold with `n_splits = min(n_folds, n_unique_studies)`). Reports `binary_f1` and `auroc` per fold.
+Uses `run_ovr_cv` with sample-level shuffled `StratifiedKFold` (`n_splits = min(n_folds, n_pos, n_neg)`). Reports `binary_f1` and `auroc` per fold. This OvR CV is an internal sanity/checkpoint metric, not a study-generalization claim; external validation remains the primary generalization metric.
 
 ### External val source per disease
 
-| Disease           | External val source                                                |
-| ----------------- | ------------------------------------------------------------------ |
-| Colorectal cancer | val split (202 disease samples)                                    |
-| IBD               | val split (204 disease samples)                                    |
-| Obesity           | holdout: `gmhi:V-12_Obesity` (104 samples) + val-split Healthy     |
-| Type 2 diabetes   | holdout: `cmd:MetaCardis_2020_a` (549 samples) + val-split Healthy |
-| Liver Cirrhosis   | none — only 1 train study, cannot hold out                         |
+| Disease           | External val source                                                    |
+| ----------------- | ---------------------------------------------------------------------- |
+| Colorectal cancer | val split (202 disease samples)                                        |
+| IBD               | val split (204 disease samples)                                        |
+| Obesity           | holdout: `gmhi:V-12_Obesity` (104 samples) + val-split Healthy         |
+| Type 2 diabetes   | holdout: `cmd:MetaCardis_2020_a` (549 samples) + val-split Healthy     |
+| Liver Cirrhosis   | weak sample split within the single positive study + val-split Healthy |
 
 For holdout diseases: the holdout study is excluded from training; its disease samples + all val-split Healthy samples form the external test set. `external_source` is stored in the JSON output per result entry.
 

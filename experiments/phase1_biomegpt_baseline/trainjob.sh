@@ -24,17 +24,9 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 cd "$SLURM_SUBMIT_DIR"
 mkdir -p logs results
 
-# 1) Self-supervised pretraining → results/pretrain_checkpoint.pt
+# Self-supervised pretraining → results/pretrain_checkpoint.pt.
+# This job is resumable from results/pretrain_last.pt when pretrain.resume=true.
 echo "=== Pretraining ==="
 python experiments/phase1_biomegpt_baseline/pretrain.py
-
-# 2) Fine-tune the frozen encoder. finetune.py runs first (writes the [CLS]
-#    embedding cache); finetune_ovr.py reuses it. task.mode in config.yaml
-#    decides whether the OvR step actually does work.
-echo "=== Fine-tuning (binary) ==="
-python experiments/phase1_biomegpt_baseline/finetune.py
-
-echo "=== Fine-tuning (OvR) ==="
-python experiments/phase1_biomegpt_baseline/finetune_ovr.py
 
 echo "Finished: $(date)"

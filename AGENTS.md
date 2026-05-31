@@ -51,3 +51,4 @@ experiments/<phase_name>/
 - Use `karpathy-guidelines` skill before writing or reviewing code.
 - No Jupyter notebooks for experiment code (EDA only).
 - After completing work, append a dated bullet to the tracker in `/Users/ming/Documents/Vault/t/wiki/indexes/Microbiome Project.md`.
+- When working with library or API (e.g., pytorch, OpenAI API), use `get-api-doc` skill to fetch the lastest document. Your knowledge is often outdated.

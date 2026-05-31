@@ -7,6 +7,7 @@ Usage:
 Trains the transformer encoder on train-split samples using BERT-style masked
 abundance reconstruction (25% masking rate, MSE loss on bin indices).
 Saves the best checkpoint to results/pretrain_checkpoint.pt.
+Also saves results/pretrain_last.pt every epoch so LANTA timeout jobs can resume.
 """
 from __future__ import annotations
 
@@ -178,11 +179,25 @@ def main() -> None:
     results_dir = os.path.join(base_dir, "results")
     os.makedirs(results_dir, exist_ok=True)
     ckpt_path = os.path.join(base_dir, cfg["pretrain"]["checkpoint_path"])
+    last_ckpt_path = os.path.join(base_dir, cfg["pretrain"]["last_checkpoint_path"])
 
     history: list[dict] = []
     best_loss = float("inf")
+    start_epoch = 1
 
-    epoch_bar = trange(1, cfg["pretrain"]["epochs"] + 1, desc="Pretraining", unit="epoch")
+    if cfg["pretrain"].get("resume", False) and os.path.exists(last_ckpt_path):
+        print(f"Resuming pretraining from {last_ckpt_path}")
+        last_ckpt = torch.load(last_ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(last_ckpt["model_state"])
+        optimizer.load_state_dict(last_ckpt["optimizer_state"])
+        if "scheduler_state" in last_ckpt:
+            scheduler.load_state_dict(last_ckpt["scheduler_state"])
+        history = last_ckpt.get("history", [])
+        best_loss = float(last_ckpt.get("best_loss", last_ckpt["loss"]))
+        start_epoch = int(last_ckpt["epoch"]) + 1
+        print(f"  Resumed after epoch {start_epoch - 1}; best loss={best_loss:.4f}")
+
+    epoch_bar = trange(start_epoch, cfg["pretrain"]["epochs"] + 1, desc="Pretraining", unit="epoch")
     for epoch in epoch_bar:
         loss = train_one_epoch(
             model, loader, optimizer, scheduler, device,
@@ -206,6 +221,21 @@ def main() -> None:
                 },
                 ckpt_path,
             )
+        torch.save(
+            {
+                "epoch": epoch,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "scheduler_state": scheduler.state_dict(),
+                "loss": loss,
+                "best_loss": best_loss,
+                "history": history,
+                "config": cfg,
+                "species_list": species_list,
+                "bin_edges": bin_edges.tolist(),
+            },
+            last_ckpt_path,
+        )
 
     with open(os.path.join(results_dir, "pretrain_history.json"), "w") as f:
         json.dump(history, f, indent=2)

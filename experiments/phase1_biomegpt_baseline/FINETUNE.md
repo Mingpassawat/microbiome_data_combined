@@ -142,14 +142,16 @@ tr_lab = 1 if disease else 0          # OvR binary label
 
 This avoids re-running the encoder and avoids re-loading the full dataset per disease.
 
-### Step 6 — GroupKFold CV per disease
+### Step 6 — Internal StratifiedKFold sanity CV per disease
 
 ```python
-gkf = GroupKFold(n_splits=min(n_cv_folds, n_unique_studies_for_this_disease))
-for fold_tr, fold_va in gkf.split(tr_idx, tr_lab, study_groups):
+skf = StratifiedKFold(n_splits=min(n_cv_folds, n_pos, n_neg), shuffle=True)
+for fold_tr, fold_va in skf.split(tr_idx, tr_lab):
     clf = _train_clf(tr_emb[fold_tr], tr_lab[fold_tr], ...)
     metrics = _eval_clf(clf, tr_emb[fold_va], tr_lab[fold_va], ...)
 ```
+
+OvR internal CV is sample-level and should be read only as a sanity/checkpoint metric. Disease positives are concentrated in too few studies for valid 10-fold study-held-out OvR CV; external validation remains the primary generalization metric.
 
 The MLP architecture is identical to `finetune.py`. Class weights are recomputed per disease based on disease sample count vs. healthy sample count — diseases with very few samples (close to the 50-sample minimum) will have a heavily upweighted positive class.
 
@@ -169,7 +171,7 @@ External val source depends on the disease:
 | IBD               | val split (204 disease samples)                                    |
 | Obesity           | holdout: `gmhi:V-12_Obesity` (104 samples) + val-split Healthy     |
 | Type 2 diabetes   | holdout: `cmd:MetaCardis_2020_a` (549 samples) + val-split Healthy |
-| Liver Cirrhosis   | none — only 1 train study, cannot hold out                         |
+| Liver Cirrhosis   | weak sample split within the single positive study + val-split Healthy |
 
 For holdout-based diseases: holdout samples were excluded from training. External val = disease samples from the holdout study + all Healthy samples from the existing val split.
 

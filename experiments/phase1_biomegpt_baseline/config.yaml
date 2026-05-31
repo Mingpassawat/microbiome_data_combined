@@ -29,6 +29,8 @@ pretrain:
   max_grad_norm: 1.0
   seed: 67
   checkpoint_path: results/pretrain_checkpoint.pt
+  last_checkpoint_path: results/pretrain_last.pt
+  resume: true
 
 finetune:
   lr: 1.0e-4

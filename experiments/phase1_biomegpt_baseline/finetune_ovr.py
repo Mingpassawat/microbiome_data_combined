@@ -5,8 +5,8 @@ Trains one binary MLP classifier per OvR task (disease=1 vs. healthy=0) on
 frozen [CLS] embeddings.  Tasks and train/val splits are precomputed by
 make_task_splits.py and stored in data/combined_microbiome/task_splits.json.
 
-Runs 10-fold study-level GroupKFold CV and external validation using the
-precomputed val_pos_keys / val_neg_keys per task.
+Runs sample-level shuffled StratifiedKFold CV as an internal sanity metric and
+external validation using the precomputed val_pos_keys / val_neg_keys per task.
 
 Usage:
     python make_task_splits.py   # once, to generate task_splits.json
@@ -28,13 +28,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import f1_score, roc_auc_score
-from sklearn.model_selection import GroupKFold
 from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
 import yaml
 
 from dataset import MicrobiomeDataset, load_data, make_collate_fn
 from model import BiomeGPT
+from ovr_cv import (
+    EXTERNAL_ROLE,
+    external_validation_strength,
+    finite_values,
+    make_ovr_folds,
+    summarize_metric_dicts,
+)
 
 
 def _get_device() -> torch.device:
@@ -296,7 +302,6 @@ def main() -> None:
             [1 if meta.loc[k, "label"] == disease else 0 for k in tr_keys],
             dtype=torch.long,
         )
-        tr_study = np.array([str(meta.loc[k, "group_id"]) for k in tr_keys])
 
         n_pos = int(tr_lab.sum())
         n_neg = int((tr_lab == 0).sum())
@@ -304,26 +309,28 @@ def main() -> None:
             tqdm.write(f"  [{disease}] degenerate split (pos={n_pos} neg={n_neg}) — skip")
             continue
 
-        # ── GroupKFold CV ─────────────────────────────────────────────────────
-        gkf = GroupKFold(n_splits=min(n_cv, len(np.unique(tr_study))))
+        # ── Internal sample-level sanity CV ───────────────────────────────────
+        folds, cv_meta = make_ovr_folds(tr_lab.numpy(), n_cv, cfg["finetune_ovr"]["seed"])
         cv_results: list[dict] = []
-        fold_bar = tqdm(
-            enumerate(gkf.split(tr_pos, tr_lab.numpy(), tr_study)),
-            total=gkf.get_n_splits(),
-            desc=f"  [{disease[:20]}] CV",
-            unit="fold",
-            leave=False,
-        )
-        for _, (fold_tr, fold_va) in fold_bar:
-            clf = _train_clf(tr_emb[fold_tr], tr_lab[fold_tr], cfg, device)
-            metrics = _eval_clf(clf, tr_emb[fold_va], tr_lab[fold_va], device)
-            cv_results.append(metrics)
-            fold_bar.set_postfix(auroc=f"{metrics['auroc']:.3f}")
+        if cv_meta["cv_status"] == "available":
+            fold_bar = tqdm(
+                enumerate(folds),
+                total=cv_meta["actual_folds"],
+                desc=f"  [{disease[:20]}] CV",
+                unit="fold",
+                leave=False,
+            )
+            for _, (fold_tr, fold_va) in fold_bar:
+                clf = _train_clf(tr_emb[fold_tr], tr_lab[fold_tr], cfg, device)
+                metrics = _eval_clf(clf, tr_emb[fold_va], tr_lab[fold_va], device)
+                cv_results.append(metrics)
+                fold_bar.set_postfix(auroc=f"{metrics['auroc']:.3f}")
+        else:
+            tqdm.write(f"  [{disease}] internal CV unavailable: {cv_meta['cv_unavailable_reason']}")
 
-        cv_mean = {
-            k: float(np.nanmean([r[k] for r in cv_results]))
-            for k in cv_results[0] if k not in ("n_pos", "n_neg")
-        }
+        cv_summary = summarize_metric_dicts(cv_results)
+        cv_summary.update(cv_meta)
+        cv_mean = cv_summary["mean"]
 
         # ── Final classifier + external val ───────────────────────────────────
         final_clf = _train_clf(tr_emb, tr_lab, cfg, device)
@@ -335,6 +342,7 @@ def main() -> None:
 
         external: dict | None = None
         ext_source = task.get("val_source", "none")
+        ext_strength = external_validation_strength(task)
         if len(pos_emb) > 0 and len(neg_emb) > 0:
             ext_emb = torch.cat([pos_emb, neg_emb], 0)
             ext_lab = torch.cat([
@@ -345,25 +353,31 @@ def main() -> None:
 
         tqdm.write(
             f"  {disease[:35]:<35} | "
-            f"CV auroc={cv_mean.get('auroc', float('nan')):.4f}  "
+            f"internal CV auroc={cv_mean.get('auroc', float('nan')):.4f}  "
             f"f1={cv_mean.get('binary_f1', float('nan')):.4f}  "
-            + (f"| ext auroc={external['auroc']:.4f} ({ext_source})"
+            + (f"| ext auroc={external['auroc']:.4f} ({ext_source}; {ext_strength})"
                if external else f"| no ext val ({ext_source})")
         )
 
         all_results[disease] = {
-            "cv": {"folds": cv_results, "mean": cv_mean},
+            "cv": cv_summary,
             "external": external,
+            "external_role": EXTERNAL_ROLE,
             "external_source": ext_source,
+            "external_validation_strength": ext_strength,
             "n_train_pos": n_pos,
             "n_train_neg": n_neg,
         }
 
     # ── Aggregate summary ─────────────────────────────────────────────────────
-    cv_aurocs  = [v["cv"]["mean"]["auroc"] for v in all_results.values()
-                  if not np.isnan(v["cv"]["mean"]["auroc"])]
-    ext_aurocs = [v["external"]["auroc"] for v in all_results.values()
-                  if v["external"] is not None and not np.isnan(v["external"]["auroc"])]
+    cv_aurocs = finite_values(
+        v["cv"]["mean"].get("auroc", float("nan")) for v in all_results.values()
+    )
+    ext_aurocs = finite_values(
+        v["external"]["auroc"]
+        for v in all_results.values()
+        if v["external"] is not None
+    )
 
     summary = {
         "n_diseases": len(all_results),
@@ -374,7 +388,10 @@ def main() -> None:
         "n_diseases_with_external_val": len(ext_aurocs),
     }
     tqdm.write(f"\nOvR summary ({len(all_results)} diseases):")
-    tqdm.write(f"  CV macro AUROC:  {summary['cv_macro_auroc_mean']:.4f} ± {summary['cv_macro_auroc_std']:.4f}")
+    tqdm.write(
+        f"  Internal CV macro AUROC:  {summary['cv_macro_auroc_mean']:.4f} "
+        f"± {summary['cv_macro_auroc_std']:.4f}"
+    )
     if ext_aurocs:
         tqdm.write(
             f"  Ext macro AUROC: {summary['external_macro_auroc_mean']:.4f} "

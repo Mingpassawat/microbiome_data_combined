@@ -296,7 +296,7 @@ The active set is controlled by `active_features` inside `baselines.py` (default
 | **Random Forest**       | 300 trees, `max_features="sqrt"`, `class_weight="balanced"`                  |
 | **XGBoost**             | 300 trees, `scale_pos_weight=neg/pos` for imbalance, `colsample_bytree=0.5`  |
 
-Same 10-fold study GroupKFold CV + external val as the transformer. In OvR mode, classifiers are re-instantiated per disease with the correct `scale_pos_weight` for that disease's imbalance ratio.
+Binary baselines use the same 10-fold study GroupKFold CV + external val as the transformer. In OvR mode, internal CV is sample-level shuffled StratifiedKFold and is only a sanity/checkpoint metric; external validation is the primary generalization metric. Classifiers are re-instantiated per disease with the correct `scale_pos_weight` for that disease's imbalance ratio.
 
 See `BASELINES.md` for a full step-by-step walkthrough of each mode.
 

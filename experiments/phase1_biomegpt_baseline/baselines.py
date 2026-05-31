@@ -6,18 +6,20 @@ Usage:
 
 Runs RF, Logistic Regression, and XGBoost (if installed) on four feature
 representations: raw proportions, log1p, CLR, and binned abundance.
-Evaluates with 10-fold study-level GroupKFold CV + external val split.
+Binary mode uses study-level GroupKFold CV + external val split.  OvR mode
+uses sample-level shuffled StratifiedKFold as an internal sanity metric;
+external validation remains the primary generalization metric.
 
 Results saved to results/baseline_results.json.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import random
 import warnings
 
-import json
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
@@ -38,6 +40,13 @@ except ImportError:
     print("xgboost not installed — skipping XGBoost baselines.")
 
 from dataset import compute_bin_edges, load_data
+from ovr_cv import (
+    CV_TYPE,
+    EXTERNAL_ROLE,
+    external_validation_strength,
+    make_ovr_folds,
+    summarize_metric_dicts,
+)
 
 
 def set_seed(seed: int) -> None:
@@ -127,9 +136,7 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray, y_prob: np.ndarray) -> dict
 
 
 def _mean_std(folds: list[dict]) -> dict:
-    mean = {k: float(np.mean([r[k] for r in folds])) for k in folds[0]}
-    std = {k: float(np.std([r[k] for r in folds])) for k in folds[0]}
-    return {"mean": mean, "std": std, "folds": folds}
+    return summarize_metric_dicts(folds, exclude=())
 
 
 # ── CV runner ─────────────────────────────────────────────────────────────────
@@ -161,17 +168,18 @@ def run_ovr_cv(
     clf,
     X: np.ndarray,
     y: np.ndarray,
-    groups: np.ndarray,
     n_folds: int,
+    seed: int,
     disease: str,
-) -> list[dict]:
-    """GroupKFold CV for a single binary OvR classifier."""
-    n_splits = min(n_folds, len(np.unique(groups)))
-    gkf = GroupKFold(n_splits=n_splits)
+) -> tuple[list[dict], dict]:
+    """Sample-level stratified CV for a single binary OvR classifier."""
+    folds, cv_meta = make_ovr_folds(y, n_folds, seed)
+    if cv_meta["cv_status"] != "available":
+        return [], cv_meta
     results = []
     fold_bar = tqdm(
-        gkf.split(X, y, groups),
-        total=n_splits,
+        folds,
+        total=cv_meta["actual_folds"],
         desc=f"  [{disease[:20]}] CV",
         unit="fold",
         leave=False,
@@ -185,7 +193,7 @@ def run_ovr_cv(
         m = _binary_metrics(y[va_idx], y_pred, y_prob)
         results.append(m)
         fold_bar.set_postfix(auroc=f"{m['auroc']:.4f}")
-    return results
+    return results, cv_meta
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -215,7 +223,36 @@ def _make_classifiers(seed: int, n_pos: int, n_neg: int) -> dict:
     return clfs
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--disease", help="Run a single OvR disease task.")
+    parser.add_argument("--classifier", help="Run a single classifier.")
+    parser.add_argument("--feature", help="Run a single feature representation.")
+    return parser.parse_args()
+
+
+def _load_results(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return json.load(f)
+
+
+def _save_results(path: str, results: dict) -> None:
+    with open(path, "w") as f:
+        json.dump(results, f, indent=2)
+
+
+def _is_complete(result: dict, require_ovr_cv_type: bool = False) -> bool:
+    if not result:
+        return False
+    if require_ovr_cv_type:
+        return result.get("cv", {}).get("cv_type") == CV_TYPE
+    return "cv" in result and "external" in result
+
+
 def main() -> None:
+    args = _parse_args()
     base_dir = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(base_dir, "config.yaml")) as f:
         cfg = yaml.safe_load(f)
@@ -250,6 +287,10 @@ def main() -> None:
     }
     # Change this list to run more/fewer feature × classifier combos
     active_features = ["log1p"]
+    if args.feature:
+        if args.feature not in feature_sets:
+            raise ValueError(f"Unknown feature: {args.feature}. Options: {sorted(feature_sets)}")
+        active_features = [args.feature]
 
     results_dir = os.path.join(base_dir, "results")
     os.makedirs(results_dir, exist_ok=True)
@@ -268,10 +309,19 @@ def main() -> None:
         )
 
         classifiers = _make_classifiers(seed, pos, neg)
-        all_results: dict = {}
+        if args.classifier:
+            if args.classifier not in classifiers:
+                raise ValueError(f"Unknown classifier: {args.classifier}. Options: {sorted(classifiers)}")
+            classifiers = {args.classifier: classifiers[args.classifier]}
+        loaded_results = _load_results(results_path)
+        all_results: dict = {k: v for k, v in loaded_results.items() if k in feature_sets}
         combos = [(f, c) for f in active_features for c in classifiers]
         outer_bar = tqdm(combos, desc="Baselines", unit="run")
         for feat_name, clf_name in outer_bar:
+            existing = all_results.get(feat_name, {}).get(clf_name, {})
+            if _is_complete(existing):
+                tqdm.write(f"\n{clf_name} | {feat_name} already complete — skip")
+                continue
             X_tr, X_va = feature_sets[feat_name]
             clf = classifiers[clf_name]
             outer_bar.set_description(f"{clf_name} | {feat_name}")
@@ -284,7 +334,12 @@ def main() -> None:
             y_prob_va = clf.predict_proba(X_va)[:, 1]
             y_pred_va = clf.predict(X_va)
             ext = _metrics(y_va, y_pred_va, y_prob_va)
-            all_results.setdefault(feat_name, {})[clf_name] = {"cv": cv_summary, "external": ext}
+            all_results.setdefault(feat_name, {})[clf_name] = {
+                "cv": cv_summary,
+                "external": ext,
+                "external_role": EXTERNAL_ROLE,
+            }
+            _save_results(results_path, all_results)
             tqdm.write(
                 f"  CV  : acc={cv_summary['mean']['accuracy']:.4f}  "
                 f"f1={cv_summary['mean']['macro_f1']:.4f}  "
@@ -292,9 +347,6 @@ def main() -> None:
                 f"  Ext : acc={ext['accuracy']:.4f}  "
                 f"f1={ext['macro_f1']:.4f}  auroc={ext['macro_auroc']:.4f}"
             )
-
-        with open(results_path, "w") as f:
-            json.dump(all_results, f, indent=2)
         tqdm.write(f"\nBaseline results saved → {results_path}")
         return
 
@@ -307,6 +359,10 @@ def main() -> None:
     with open(splits_path) as f:
         task_splits: dict[str, dict] = json.load(f)
     ovr_tasks = {k: v for k, v in task_splits.items() if k != "binary"}
+    if args.disease:
+        if args.disease not in ovr_tasks:
+            raise ValueError(f"Unknown disease: {args.disease}. Options: {sorted(ovr_tasks)}")
+        ovr_tasks = {args.disease: ovr_tasks[args.disease]}
     tqdm.write(f"\nOvR tasks ({len(ovr_tasks)}): {list(ovr_tasks)}")
 
     # key → positional index in X_tr_raw / X_va_raw
@@ -328,7 +384,8 @@ def main() -> None:
             return np.empty((0, X_tr.shape[1]), dtype=X_tr.dtype)
         return np.concatenate(parts, axis=0)
 
-    all_ovr_results: dict = {}
+    loaded_results = _load_results(results_path)
+    all_ovr_results: dict = {k: v for k, v in loaded_results.items() if k in ovr_tasks}
     disease_bar = tqdm(ovr_tasks.items(), desc="OvR diseases", unit="disease", total=len(ovr_tasks))
     for disease, task in disease_bar:
         disease_bar.set_postfix(disease=disease[:30])
@@ -342,7 +399,6 @@ def main() -> None:
             [1 if meta_with_label.loc[k, "label"] == disease else 0 for k in tr_keys],
             dtype=int,
         )
-        groups_d = np.array([str(meta_with_label.loc[k, "group_id"]) for k in tr_keys])
         n_pos_d = int(y_tr_d.sum())
         n_neg_d = int((y_tr_d == 0).sum())
         if n_pos_d == 0 or n_neg_d == 0:
@@ -351,16 +407,25 @@ def main() -> None:
 
         ext_source = task.get("val_source", "none")
         classifiers_d = _make_classifiers(seed, n_pos_d, n_neg_d)
+        if args.classifier:
+            if args.classifier not in classifiers_d:
+                raise ValueError(f"Unknown classifier: {args.classifier}. Options: {sorted(classifiers_d)}")
+            classifiers_d = {args.classifier: classifiers_d[args.classifier]}
         combos = [(f, c) for f in active_features for c in classifiers_d]
-        disease_results: dict = {}
+        disease_results: dict = all_ovr_results.get(disease, {})
 
         for feat_name, clf_name in combos:
+            existing = disease_results.get(feat_name, {}).get(clf_name, {})
+            if _is_complete(existing, require_ovr_cv_type=True):
+                tqdm.write(f"  [{disease}] {clf_name}/{feat_name} already complete — skip")
+                continue
             X_tr_full, X_va_full = feature_sets[feat_name]
             X_tr_d = X_tr_full[tr_pos]
             clf = classifiers_d[clf_name]
 
-            folds = run_ovr_cv(clf, X_tr_d, y_tr_d, groups_d, n_folds, disease)
-            cv_summary = _mean_std(folds)
+            folds, cv_meta = run_ovr_cv(clf, X_tr_d, y_tr_d, n_folds, seed, disease)
+            cv_summary = summarize_metric_dicts(folds)
+            cv_summary.update(cv_meta)
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -385,25 +450,31 @@ def main() -> None:
             disease_results.setdefault(feat_name, {})[clf_name] = {
                 "cv": cv_summary,
                 "external": external,
+                "external_role": EXTERNAL_ROLE,
                 "external_source": ext_source,
+                "external_validation_strength": external_validation_strength(task),
                 "n_train_pos": n_pos_d,
                 "n_train_neg": n_neg_d,
             }
+            all_ovr_results[disease] = disease_results
+            _save_results(results_path, all_ovr_results)
 
         all_ovr_results[disease] = disease_results
         best = disease_results[active_features[0]]
         first_clf = next(iter(best))
         cv_mean = best[first_clf]["cv"]["mean"]
         ext = best[first_clf]["external"]
+        ext_strength = best[first_clf].get("external_validation_strength", "standard")
+        cv_auroc = cv_mean.get("auroc", float("nan"))
+        cv_f1 = cv_mean.get("binary_f1", float("nan"))
         tqdm.write(
             f"  {disease[:35]:<35} | "
-            f"CV auroc={cv_mean['auroc']:.4f}  f1={cv_mean['binary_f1']:.4f}"
-            + (f"  | ext auroc={ext['auroc']:.4f} ({ext_source})" if ext
+            f"internal CV auroc={cv_auroc:.4f}  f1={cv_f1:.4f}"
+            + (f"  | ext auroc={ext['auroc']:.4f} ({ext_source}; {ext_strength})" if ext
                else f"  | no ext val ({ext_source})")
         )
 
-    with open(results_path, "w") as f:
-        json.dump(all_ovr_results, f, indent=2)
+    _save_results(results_path, all_ovr_results)
     tqdm.write(f"\nOvR baseline results saved → {results_path}")
 
 
