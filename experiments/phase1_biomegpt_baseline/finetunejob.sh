@@ -4,7 +4,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=4
-#SBATCH -t 8:00:00
+#SBATCH -t 20:00:00
 #SBATCH -J biomegpt_finetune
 #SBATCH -o logs/finetune_%j.out
 #SBATCH -e logs/finetune_%j.err

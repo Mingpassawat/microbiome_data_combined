@@ -4,7 +4,7 @@
 #SBATCH --ntasks-per-node=1        #specify number of tasks per node
 #SBATCH --gpus-per-node=1          #specify number of GPUs (1x A100)
 #SBATCH --cpus-per-task=4         #specify number of cpus
-#SBATCH -t 12:00:00                #job time limit <hr:min:sec>
+#SBATCH -t 40:00:00                #job time limit <hr:min:sec>
 #SBATCH -J biomegpt_train          #job name
 #SBATCH -o logs/train_%j.out       #stdout log (%j = job id)
 #SBATCH -e logs/train_%j.err       #stderr log

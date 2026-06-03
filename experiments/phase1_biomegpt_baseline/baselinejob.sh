@@ -3,7 +3,7 @@
 #SBATCH -N 1                       #specify number of nodes
 #SBATCH --ntasks-per-node=1        #specify number of tasks per node
 #SBATCH --cpus-per-task=4         #specify number of cpus (sklearn/XGBoost threads)
-#SBATCH -t 12:00:00                 #job time limit <hr:min:sec>
+#SBATCH -t 20:00:00                 #job time limit <hr:min:sec>
 #SBATCH -J baselines               #job name
 #SBATCH -o logs/baselines_%j.out   #stdout log (%j = job id)
 #SBATCH -e logs/baselines_%j.err   #stderr log
